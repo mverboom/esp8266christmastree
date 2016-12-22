@@ -18,10 +18,14 @@
 #define UPDATE_STATE -4
 #define UPDATE_LEN -5
 #define EFFECT_STATE -1
-//#define vel 100 // Velocity in milliseconds
+#define LED_SET 1
+#define LED_UPDATE 2
+#define LED_OVERWRITE 4
+#define LED_FADEIN 8
+#define LED_FADEOUT 16
 
 const int effects = 5;
-const char * const effectlist[] = { "Blink", "Loop", "Fill", "Double loop", "Fade"};
+const char * const effectlist[] = { "Off", "Loop", "Fill", "Double loop", "Stars"};
 
 // LED layout
 //    9
@@ -52,7 +56,6 @@ function start() {
   ws.onerror = function(event) { console.log(event); };
   ws.onmessage = function(event) {
     var i, color, col, x;
-    //console.log(event.data);
     switch (event.data.substr(0,1)) {
        case 'e':
           console.log(event.data);
@@ -287,7 +290,7 @@ void setstrip(long int color) {
 
 int update(int updatetype, int setlength) {
    static int update = UPDATE_STATIC;
-   static int length = 1000;
+   static int length = 500;
    int temp;
 
    switch (updatetype) {
@@ -317,7 +320,7 @@ int update(int updatetype, int setlength) {
 }
 
 long int color(long int setcolor) {
-   static long int color = COLOR_RANDOM;
+   static long int color = 0xff0000;
    long int temp;
 
    switch (setcolor) {
@@ -368,46 +371,9 @@ void stripshow() {
       sprintf(colorstring, "%s#%02x%02x%02x", colorstring, (uint8_t) ((color >> 16) & 0xff), (uint8_t) ((color >> 8) & 0xff),
 (uint8_t) ((color) & 0xff));
    }
-   //sprintf(colorstring, "%s\0", colorstring);
-   //Serial.println(colorstring);
    webSocket.broadcastTXT(colorstring, strlen(colorstring));
-   //webSocket.broadcastBIN(status,3);
 }
 
-void led_blink(void) {
-   static unsigned long last_time;
-   static int col = 0;
-   unsigned long time = millis();
-   static int interval = update(UPDATE_GET,0);
-
-   if (time > last_time + interval) {
-      if (col == 0)
-         col = color(COLOR_GET);
-      else
-         col = 0;
-      setstrip(col);
-      last_time = time;
-      interval = update(UPDATE_GET,0);
-   }
-}
-
-void led_loop(int pat, const int leds[]) {
-   static unsigned long last_time;
-   static int pos = 0;
-   unsigned long time = millis();
-   static int interval = update(UPDATE_GET,0);
-
-   if (time > last_time + interval) {
-      strip.setPixelColor(leds[pos], 0, 0, 0);
-      pos++;
-      if (pos >= pat)
-         pos = 0;
-      strip.setPixelColor(leds[pos], color(COLOR_GET));
-      stripshow();
-      last_time = time;
-      interval = update(UPDATE_GET,0);
-   }
-}
 
 long int rgb(long int color, int perc) {
    unsigned int r;
@@ -422,65 +388,96 @@ long int rgb(long int color, int perc) {
    return(col);
 }
 
-// Divide timesteps by led steps to get same interval
-// Optional only fade in or out?
-// Pattern fades?
-int led_fade(int led, int step) {
+int led_fade(int flags, int led, int step) {
    static int led_fade[NUM_PIXELS];
    static int led_steps[NUM_PIXELS];
    static int led_step[NUM_PIXELS];
+   static int led_flags[NUM_PIXELS];
    static long int led_color[NUM_PIXELS];
    
    static unsigned long last_time[NUM_PIXELS];
    unsigned long time = millis();
    static int interval[NUM_PIXELS];
 
-   int count;
+   int curled;
    int active = 0;
    int updated = 0;
 
-   if (led != -1 && led_fade[led] == 0) {
-      led_steps[led] = step;
-      led_step[led] = 0;
-      led_color[led] = color(COLOR_GET);
-      led_fade[led] = 1;
-      interval[led] = update(UPDATE_GET,0) / step;
-      last_time[led] = 0;
-      //Serial.printf("Added led %d, steps %d\n", led, step);
-   }
-
-   for (count = 0; count < NUM_PIXELS; count++) {
-      if (led_fade[count] != 0) {
-         active++;
-         if (time > last_time[count] + interval[count]) {
-            updated=1;
-            //Serial.printf("Updated led %d\n", count);
-            if (led_fade[count] == 1) {
-               led_step[count]++;
-               if (led_step[count] == led_steps[count])
-                  led_fade[count] = -1; 
-            } else {
-               led_step[count]--;
-               if (led_step[count] < 0) {
-                  led_step[count] = 0;
-                  led_fade[count] = 0;
-               }
-            }
-            strip.setPixelColor(count, rgb(led_color[count], (led_step[count] *100)/ led_steps[count]));
-           last_time[count] = time;
-            interval[count] = update(UPDATE_GET,0) / led_steps[count];
-         }
+   if (flags & LED_SET) {
+      if (led_fade[led] == 0 || (led_fade[led] != 0 && (flags & LED_OVERWRITE))) {
+         led_steps[led] = step;
+         led_step[led] = 0;
+         led_color[led] = color(COLOR_GET);
+         led_fade[led] = LED_FADEIN;
+         led_flags[led] = 0;
+         interval[led] = update(UPDATE_GET,0) / step;
+         last_time[led] = 0;
+         //Serial.printf("Added led %d, steps %d\n", led, step);
       }
    }
-   if (updated > 0) {
-      stripshow();
-      //Serial.printf("update, active: %d\n", active);
-      return(active);
+   if (flags & LED_UPDATE) {
+      for (curled = 0; curled < NUM_PIXELS; curled++) {
+         if (led_fade[curled] != 0) {
+            active++;
+            if (time > last_time[curled] + interval[curled]) {
+               updated=1;
+               //Serial.printf("Updated led %d\n", curled);
+               if (led_fade[curled] == LED_FADEIN) {
+                  led_step[curled]++;
+                  if (led_step[curled] == led_steps[curled])
+                     led_fade[curled] = LED_FADEOUT; 
+               } else {
+                   led_step[curled]--;
+                   if (led_step[curled] == 0) {
+                      led_step[curled] = 0;
+                      led_fade[curled] = 0;
+                   }
+               }
+               strip.setPixelColor(curled, rgb(led_color[curled], (led_step[curled] *100)/ led_steps[curled]));
+               last_time[curled] = time;
+               interval[curled] = update(UPDATE_GET,0) / led_steps[curled];
+            }
+         }
+      }
+      if (updated > 0) {
+         stripshow();
+         //Serial.printf("update, active: %d\n", active);
+         return(active);
+      }
+      if (active == 0)
+         return(0);
+      else
+         return(-1);
    }
-   if (active == 0)
-      return(0);
-   else
-      return(-1);
+   return(0);
+}
+
+void led_loop(int pat, const int leds[]) {
+   static unsigned long last_time;
+   static int pos = 0;
+   unsigned long time = millis();
+   static int interval = update(UPDATE_GET,0);
+
+   if (time > last_time + interval) {
+      //strip.setPixelColor(leds[pos], 0, 0, 0);
+      pos++;
+      if (pos >= pat)
+         pos = 0;
+      //strip.setPixelColor(leds[pos], color(COLOR_GET));
+      led_fade(LED_SET, leds[pos],5);
+      //stripshow();
+      last_time = time;
+      interval = update(UPDATE_GET,0);
+   }
+   led_fade(LED_UPDATE,0,0);
+}
+
+void led_star(void) {
+   int ret;
+
+   ret = led_fade(LED_UPDATE, 0,0);
+   if (ret != -1 && ret < 6 && random(10) == 5)
+      led_fade(LED_SET, random(NUM_PIXELS),random(8,15));
 }
 
 const int pat_fill[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
@@ -495,7 +492,7 @@ void loop() {
       server.handleClient();
       webSocket.loop();
       switch (effect(EFFECT_STATE)) {
-         case 0: led_blink();
+         case 0: delay(500);
          break;
          case 1: led_loop(8, pat_loop);
          break;
@@ -503,10 +500,7 @@ void loop() {
          break;
          case 3: led_loop(14, pat_dblloop);
          break;
-         case 4: ret = led_fade(-1,0);
-                 if (ret != -1 && ret < 6 && random(10) == 5) {
-                    led_fade(random(NUM_PIXELS),random(4,10));
-                 }
+         case 4: led_star();
          break;
       }
    }
